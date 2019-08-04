@@ -1,0 +1,18 @@
+linters:
+  flake8:
+    fixer: true
+  golint:
+    fixer: true
+  shellcheck:
+    shell: bash
+  swiftlint: {  }
+  phpcs:
+    standard: PSR2
+    fixer: true
+  rubocop:
+    fixer: true
+files:
+  ignore:
+    - 'vendor/*'
+fixers:
+  enable: true
