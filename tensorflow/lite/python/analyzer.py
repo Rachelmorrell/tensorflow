@@ -20,7 +20,7 @@ import os
 if not os.path.splitext(__file__)[0].endswith(
     os.path.join("tflite_runtime", "analyzer")):
   # This file is part of tensorflow package.
-  from tensorflow.lite.python import wrap_toco
+  from tensorflow.compiler.mlir.lite.python import wrap_converter
   from tensorflow.lite.python.analyzer_wrapper import _pywrap_analyzer_wrapper as _analyzer_wrapper
   from tensorflow.python.util.tf_export import tf_export as _tf_export
 else:
@@ -96,9 +96,22 @@ class ModelAnalyzer():
       input_is_filepath = False
 
     if kwargs.get("experimental_use_mlir", False):
-      print(
-          wrap_toco.wrapped_flat_buffer_file_to_mlir(tflite_model,
-                                                     input_is_filepath))
+      try:
+        mlir_text = wrap_converter.wrapped_flat_buffer_file_to_mlir(
+            tflite_model,
+            input_is_filepath,
+            cl_options=[
+                "-mlir-print-local-scope",
+                "-mlir-elide-elementsattrs-if-larger=16",
+            ],
+        )
+      except TypeError:
+        # Fallback for environments where wrapped_flat_buffer_file_to_mlir does
+        # not yet accept cl_options (e.g. OSS LiteRT using external TF).
+        mlir_text = wrap_converter.wrapped_flat_buffer_file_to_mlir(
+            tflite_model, input_is_filepath
+        )
+      print(mlir_text)
     else:
       print(
           _analyzer_wrapper.ModelAnalyzer(tflite_model, input_is_filepath,

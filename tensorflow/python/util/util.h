@@ -152,6 +152,24 @@ bool IsTensorSpec(PyObject* o);
 //   True if the object is an eager tensor (or mimicking as one).
 bool IsEagerTensorSlow(PyObject* o);
 
+// Returns a true if its input subclasses TensorProtocol.
+//
+// Args:
+//   o: the input to be checked.
+//
+// Returns:
+//   True if the object implements TensorProtocol.
+bool IsTensorProtocol(PyObject* o);
+
+// Returns a true if its input is a core.Value type.
+//
+// Args:
+//   o: the input to be checked.
+//
+// Returns:
+//   True if the object is a core.Value type.
+bool IsCoreTypeValue(PyObject* o);
+
 // Returns a true if its input is a ResourceVariable.
 //
 // Args:
@@ -203,19 +221,14 @@ PyObject* Flatten(PyObject* nested, bool expand_composites = false);
 
 // The tensorflow.python.data package has its own nest utility that follows very
 // slightly different semantics for its functions than the tensorflow.python
-// nest utility. Returns a true if its input is a collections.Sequence (except
-// strings).
+// nest utility. Returns True if its input is a nested structure for tf.data.
 //
 // Main differences are (this is copied from nest.py in the
 // tensorflow.data.util):
 //
 // 1. It removes support for lists as a level of nesting in nested structures.
 // 2. It adds support for `SparseTensorValue` as an atomic element.
-
-// IsSequence specialized for `tf.data`. Additional comments about
-// difference in functionality can be found in nest.py in
-// `tensorflow.python.data.util` and in the comments for Flatten above.
-bool IsSequenceForData(PyObject* o);
+bool IsNestedForData(PyObject* o);
 
 // Flatten specialized for `tf.data`. Additional comments about
 // difference in functionality can be found in nest.py in
@@ -230,9 +243,6 @@ PyObject* AssertSameStructureForData(PyObject* o1, PyObject* o2,
 // valid names, and the expected values for those names, are listed in
 // the documentation for `RegisteredPyObjects`.  Returns PyNone.
 PyObject* RegisterPyObject(PyObject* name, PyObject* value);
-
-// Variant of RegisterPyObject that requires the object's value to be a type.
-PyObject* RegisterType(PyObject* type_name, PyObject* type);
 
 // Returns a borrowed reference to an object that was registered with
 // RegisterPyObject.  (Do not call Py_DECREF on the result).

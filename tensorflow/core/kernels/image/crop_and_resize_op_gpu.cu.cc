@@ -15,6 +15,8 @@ limitations under the License.
 
 // See docs in ../ops/image_ops.cc.
 
+#include <cmath>
+#include <string>
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define EIGEN_USE_GPU
@@ -37,12 +39,15 @@ enum InterpolationMethod {
 };
 
 template <typename T>
-__global__ void CropAndResizeKernel(
-    const int32 nthreads, const T* __restrict__ image_ptr,
-    const float* __restrict__ boxes_ptr, const int32* __restrict__ box_ind_ptr,
-    int num_boxes, int batch, int image_height, int image_width,
-    int crop_height, int crop_width, int depth, int method_id,
-    float extrapolation_value, float* __restrict__ crops_ptr) {
+__global__ void CropAndResizeKernel(const int32_t nthreads,
+                                    const T* __restrict__ image_ptr,
+                                    const float* __restrict__ boxes_ptr,
+                                    const int32_t* __restrict__ box_ind_ptr,
+                                    int num_boxes, int batch, int image_height,
+                                    int image_width, int crop_height,
+                                    int crop_width, int depth, int method_id,
+                                    float extrapolation_value,
+                                    float* __restrict__ crops_ptr) {
   // Precompute some constants outside the loop.
   //
   // The compiler doesn't hoist them outside the loop because of the
@@ -73,7 +78,7 @@ __global__ void CropAndResizeKernel(
     const float y2 = boxes_ptr[b * 4 + 2];
     const float x2 = boxes_ptr[b * 4 + 3];
 
-    const int32 b_in = box_ind_ptr[b];
+    const int32_t b_in = box_ind_ptr[b];
     if (b_in < 0 || b_in >= batch) {
       continue;
     }
@@ -82,7 +87,7 @@ __global__ void CropAndResizeKernel(
         (crop_height > 1)
             ? y1 * image_height_minus_one + y * (y2 - y1) * height_scale_factor
             : 0.5f * (y1 + y2) * image_height_minus_one;
-    if (in_y < 0 || in_y > image_height_minus_one) {
+    if (!(in_y >= 0 && in_y <= image_height_minus_one)) {
       crops_ptr[out_idx] = extrapolation_value;
       continue;
     }
@@ -91,7 +96,7 @@ __global__ void CropAndResizeKernel(
         (crop_width > 1)
             ? x1 * image_width_minus_one + x * (x2 - x1) * width_scale_factor
             : 0.5f * (x1 + x2) * image_width_minus_one;
-    if (in_x < 0 || in_x > image_width_minus_one) {
+    if (!(in_x >= 0 && in_x <= image_width_minus_one)) {
       crops_ptr[out_idx] = extrapolation_value;
       continue;
     }
@@ -142,11 +147,11 @@ __global__ void CropAndResizeKernel(
 
 template <typename T>
 __global__ void CropAndResizeBackpropImageKernel(
-    const int32 nthreads, const float* __restrict__ grads_ptr,
-    const float* __restrict__ boxes_ptr, const int32* __restrict__ box_ind_ptr,
-    int num_boxes, int batch, int image_height, int image_width,
-    int crop_height, int crop_width, int depth, T* __restrict__ grads_image_ptr,
-    int method_id) {
+    const int32_t nthreads, const float* __restrict__ grads_ptr,
+    const float* __restrict__ boxes_ptr,
+    const int32_t* __restrict__ box_ind_ptr, int num_boxes, int batch,
+    int image_height, int image_width, int crop_height, int crop_width,
+    int depth, T* __restrict__ grads_image_ptr, int method_id) {
   GPU_1D_KERNEL_LOOP(out_idx, nthreads) {
     // out_idx = d + depth * (w + crop_width * (h + crop_height * b))
     int idx = out_idx;
@@ -162,7 +167,7 @@ __global__ void CropAndResizeBackpropImageKernel(
     const float y2 = boxes_ptr[b * 4 + 2];
     const float x2 = boxes_ptr[b * 4 + 3];
 
-    const int32 b_in = box_ind_ptr[b];
+    const int32_t b_in = box_ind_ptr[b];
     if (b_in < 0 || b_in >= batch) {
       continue;
     }
@@ -176,14 +181,14 @@ __global__ void CropAndResizeBackpropImageKernel(
     const float in_y = (crop_height > 1)
                            ? y1 * (image_height - 1) + y * height_scale
                            : 0.5f * (y1 + y2) * (image_height - 1);
-    if (in_y < 0 || in_y > image_height - 1) {
+    if (!(in_y >= 0 && in_y <= image_height - 1)) {
       continue;
     }
 
     const float in_x = (crop_width > 1)
                            ? x1 * (image_width - 1) + x * width_scale
                            : 0.5f * (x1 + x2) * (image_width - 1);
-    if (in_x < 0 || in_x > image_width - 1) {
+    if (!(in_x >= 0 && in_x <= image_width - 1)) {
       continue;
     }
 
@@ -238,9 +243,9 @@ __global__ void CropAndResizeBackpropImageKernel(
 
 template <typename T>
 __global__ void CropAndResizeBackpropBoxesKernel(
-    const int32 nthreads, const float* __restrict__ grads_ptr,
+    const int32_t nthreads, const float* __restrict__ grads_ptr,
     const T* __restrict__ image_ptr, const float* __restrict__ boxes_ptr,
-    const int32* __restrict__ box_ind_ptr, int num_boxes, int batch,
+    const int32_t* __restrict__ box_ind_ptr, int num_boxes, int batch,
     int image_height, int image_width, int crop_height, int crop_width,
     int depth, float* __restrict__ grads_boxes_ptr) {
   GPU_1D_KERNEL_LOOP(out_idx, nthreads) {
@@ -258,7 +263,7 @@ __global__ void CropAndResizeBackpropBoxesKernel(
     const float y2 = boxes_ptr[b * 4 + 2];
     const float x2 = boxes_ptr[b * 4 + 3];
 
-    const int32 b_in = box_ind_ptr[b];
+    const int32_t b_in = box_ind_ptr[b];
     if (b_in < 0 || b_in >= batch) {
       continue;
     }
@@ -278,14 +283,14 @@ __global__ void CropAndResizeBackpropBoxesKernel(
     const float in_y = (crop_height > 1)
                            ? y1 * (image_height - 1) + y * height_scale
                            : 0.5f * (y1 + y2) * (image_height - 1);
-    if (in_y < 0 || in_y > image_height - 1) {
+    if (!(in_y >= 0 && in_y <= image_height - 1)) {
       continue;
     }
 
     const float in_x = (crop_width > 1)
                            ? x1 * (image_width - 1) + x * width_scale
                            : 0.5f * (x1 + x2) * (image_width - 1);
-    if (in_x < 0 || in_x > image_width - 1) {
+    if (!(in_x >= 0 && in_x <= image_width - 1)) {
       continue;
     }
 
@@ -362,7 +367,7 @@ struct CropAndResize<GPUDevice, T> {
   bool operator()(const OpKernelContext* context,
                   typename TTypes<T, 4>::ConstTensor image,
                   typename TTypes<float, 2>::ConstTensor boxes,
-                  typename TTypes<int32, 1>::ConstTensor box_ind,
+                  typename TTypes<int32_t, 1>::ConstTensor box_ind,
                   const std::string& method_name, float extrapolation_value,
                   typename TTypes<float, 4>::Tensor crops) {
     const int batch = image.dimension(0);
@@ -400,7 +405,7 @@ struct CropAndResizeBackpropImage<GPUDevice, T> {
   bool operator()(const OpKernelContext* context,
                   typename TTypes<float, 4>::ConstTensor grads,
                   typename TTypes<float, 2>::ConstTensor boxes,
-                  typename TTypes<int32, 1>::ConstTensor box_ind,
+                  typename TTypes<int32_t, 1>::ConstTensor box_ind,
                   typename TTypes<T, 4>::Tensor grads_image,
                   const std::string& method_name) {
     const int batch = grads_image.dimension(0);
@@ -452,7 +457,7 @@ struct CropAndResizeBackpropBoxes<GPUDevice, T> {
                   typename TTypes<float, 4>::ConstTensor grads,
                   typename TTypes<T, 4>::ConstTensor image,
                   typename TTypes<float, 2>::ConstTensor boxes,
-                  typename TTypes<int32, 1>::ConstTensor box_ind,
+                  typename TTypes<int32_t, 1>::ConstTensor box_ind,
                   typename TTypes<float, 2>::Tensor grads_boxes) {
     const int batch = image.dimension(0);
     const int image_height = image.dimension(1);
@@ -495,7 +500,9 @@ struct CropAndResizeBackpropBoxes<GPUDevice, T> {
   template struct CropAndResizeBackpropImage<GPUDevice, T>; \
   template struct CropAndResizeBackpropBoxes<GPUDevice, T>;
 
-TF_CALL_GPU_NUMBER_TYPES(DEFINE_GPU_SPECS);
+TF_CALL_half(DEFINE_GPU_SPECS);
+TF_CALL_float(DEFINE_GPU_SPECS);
+TF_CALL_double(DEFINE_GPU_SPECS);
 
 #undef DEFINE_GPU_SPECS
 

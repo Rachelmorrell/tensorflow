@@ -1,9 +1,23 @@
+// Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
 // RUN: kernel-gen-opt %s -rewrite-tf-framework-assert -split-input-file |\
 // RUN: FileCheck %s
 
 // CHECK-LABEL: func @assert(
 // CHECK-SAME: [[CTX:%.*]]: !tf_framework.op_kernel_context
-func @assert(%ctx: !tf_framework.op_kernel_context)
+func.func @assert(%ctx: !tf_framework.op_kernel_context)
        -> (memref<*xf32>, memref<*xi32>) attributes {tf_entry} {
   %true = arith.constant true
   tf_framework.assert %ctx, %true, INVALID_ARGUMENT, "the one and only"
@@ -11,10 +25,10 @@ func @assert(%ctx: !tf_framework.op_kernel_context)
   %unranked_f32 = memref.cast %buf_f32 : memref<2xf32> to memref<*xf32>
   %buf_i32 = tf_framework.alloc(%ctx) : memref<3xi32>
   %unranked_i32 = memref.cast %buf_i32 : memref<3xi32> to memref<*xi32>
-  return %unranked_f32, %unranked_i32 : memref<*xf32>, memref<*xi32>
+  func.return %unranked_f32, %unranked_i32 : memref<*xf32>, memref<*xi32>
 }
 // CHECK:   [[TRUE:%.*]] = arith.constant true
-// CHECK:   cond_br [[TRUE]], ^bb1, ^bb2
+// CHECK:   cf.cond_br [[TRUE]], ^bb1, ^bb2
 // CHECK: ^bb1:
 // CHECK:   [[BUF_F32:%.*]] = tf_framework.alloc([[CTX]]) : memref<2xf32>
 // CHECK:   [[OUT_F32:%.*]] = memref.cast [[BUF_F32]]
@@ -32,7 +46,7 @@ func @assert(%ctx: !tf_framework.op_kernel_context)
 
 // CHECK-LABEL: func @double_assert(
 // CHECK-SAME: [[CTX:%.*]]: !tf_framework.op_kernel_context
-func @double_assert(%ctx: !tf_framework.op_kernel_context)
+func.func @double_assert(%ctx: !tf_framework.op_kernel_context)
        -> memref<*xf32> attributes {tf_entry} {
   %true = arith.constant true
   %false = arith.constant false
@@ -40,13 +54,13 @@ func @double_assert(%ctx: !tf_framework.op_kernel_context)
   tf_framework.assert %ctx, %false, INVALID_ARGUMENT, "second assertion"
   %buf = tf_framework.alloc(%ctx) : memref<2xf32>
   %unranked_buf = memref.cast %buf : memref<2xf32> to memref<*xf32>
-  return %unranked_buf : memref<*xf32>
+  func.return %unranked_buf : memref<*xf32>
 }
 // CHECK-DAG:   [[TRUE:%.*]] = arith.constant true
 // CHECK-DAG:   [[FALSE:%.*]] = arith.constant false
-// CHECK:   cond_br [[TRUE]], ^bb1, ^bb3
+// CHECK:   cf.cond_br [[TRUE]], ^bb1, ^bb3
 // CHECK: ^bb1:
-// CHECK:   cond_br [[FALSE]], ^bb2, ^bb4
+// CHECK:   cf.cond_br [[FALSE]], ^bb2, ^bb4
 // CHECK: ^bb2:
 // CHECK:   [[BUF:%.*]] = tf_framework.alloc([[CTX]]) : memref<2xf32>
 // CHECK:   [[OUT:%.*]] = memref.cast [[BUF]]

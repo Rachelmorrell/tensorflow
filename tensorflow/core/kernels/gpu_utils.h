@@ -22,6 +22,8 @@ limitations under the License.
 
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/lazy_op_runner.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -29,17 +31,30 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/stream_executor.h"
-#include "tensorflow/stream_executor/dnn.h"
-#include "tensorflow/stream_executor/lazy_op_runner.h"
 
 namespace stream_executor {
 class RedzoneAllocator;
 }  // namespace stream_executor
 
+namespace xla {
+class AutotuneResult;
+}  // namespace xla
+
 namespace tensorflow {
 
+// Returns true if bfloat16 is directly supported in Ops and inputs shall not be
+// casted to floats to perform the computations and then back.
+bool IsBF16SupportedInOps(se::Stream* stream);
+
 class NodeDef;
-class AutotuneResult;
+using xla::AutotuneResult;
+
+template <typename T>
+se::DeviceMemory<T> AsDeviceMemory(const T* gpu_memory) {
+  stream_executor::DeviceAddressBase wrapped(const_cast<T*>(gpu_memory));
+  se::DeviceMemory<T> typed(wrapped);
+  return typed;
+}
 
 // Return whether the redzone check is disabled.
 //
@@ -53,8 +68,9 @@ bool RedzoneCheckDisabled();
 // Returns `buffer` if RedzoneCheckDisabled() is true.
 //
 // On error, return `buffer`, and log an error message (once).
-se::DeviceMemoryBase WrapRedzoneBestEffort(se::RedzoneAllocator* rz_allocator,
-                                           se::DeviceMemoryBase buffer);
+stream_executor::DeviceAddressBase WrapRedzoneBestEffort(
+    se::RedzoneAllocator* rz_allocator,
+    stream_executor::DeviceAddressBase buffer);
 
 // Check the passed allocator for redzone violations.
 // If violations have occurred, mark the corresponding autotune result
@@ -63,11 +79,28 @@ void CheckRedzones(const se::RedzoneAllocator& rz_allocator,
                    AutotuneResult* autotune_result);
 
 template <typename T>
-inline se::DeviceMemory<T> AsDeviceMemory(const T* cuda_memory, uint64 size) {
-  se::DeviceMemoryBase wrapped(const_cast<T*>(cuda_memory), size * sizeof(T));
+inline se::DeviceMemory<T> AsDeviceMemory(const T* cuda_memory, uint64_t size) {
+  stream_executor::DeviceAddressBase wrapped(const_cast<T*>(cuda_memory),
+                                             size * sizeof(T));
   se::DeviceMemory<T> typed(wrapped);
   return typed;
 }
+
+// Returns whether cuBLASLt is enabled.
+//
+// Controlled by the TF_USE_CUBLASLT environment variable.
+bool EnableCublasLtGemm();
+
+namespace internal {
+
+template <typename Parameters>
+struct AutotuneMapHasher {
+  std::size_t operator()(const Parameters& parameter) const {
+    return parameter.hash();
+  }
+};
+
+}  // namespace internal
 
 // A helper class that looks up the best autotuned config from parameters.
 // Due to the noisy nature of autotune, especially with multiple devices, it
@@ -79,16 +112,9 @@ inline se::DeviceMemory<T> AsDeviceMemory(const T* cuda_memory, uint64 size) {
 // back and forth randomly, the expected number of experiments before autotune
 // settles is O(threshold ^ 2). So we recommend that number of warmup runs
 // for any benchmarks.
-template <typename Parameters, typename Config>
+template <typename Parameters, typename Config,
+          typename Hasher = internal::AutotuneMapHasher<Parameters>>
 class AutotuneMap {
- private:
-  // Retrieves the hash code of Parameters class.
-  struct Hasher {
-    std::size_t operator()(const Parameters& parameter) const {
-      return parameter.hash();
-    }
-  };
-
  public:
   bool Find(const Parameters& params, Config* config) const {
     mutex_lock lock(mu_);
@@ -175,8 +201,8 @@ class AutotuneMap {
   // Underlying data structure of values in the map.
   struct ValueType {
     Config config;
-    int32 score;
-    int32 count;
+    int32_t score;
+    int32_t count;
   };
   AutotuneMap(const std::string& name) : name_(name) {
     min_score_threshold_ = 1;
@@ -198,13 +224,14 @@ class AutotuneMap {
     autotune_global_count_ = 0;
   }
 
-  template <class Group, class Params, class Cfg>
+  template <class Group, class Params, class Cfg, class Hash>
   friend class AutotuneSingleton;
 
-  std::string GetActionSummary(StringPiece action, const Parameters& params,
-                               const Config& config) {
+  std::string GetActionSummary(absl::string_view action,
+                               const Parameters& params, const Config& config) {
     return strings::Printf("autotune_map %s %s: %s -> (%s)", name_.c_str(),
-                           string(action).c_str(), params.ToString().c_str(),
+                           std::string(action).c_str(),
+                           params.ToString().c_str(),
                            config.ToString().c_str());
   }
 
@@ -213,22 +240,24 @@ class AutotuneMap {
   std::unordered_map<Parameters, ValueType, Hasher> params_config_map_
       TF_GUARDED_BY(mu_);
   std::string name_;
-  int32 min_score_threshold_;
-  int32 max_autotune_count_;
-  int32 max_autotune_global_count_;
-  int32 autotune_global_count_;
+  int32_t min_score_threshold_;
+  int32_t max_autotune_count_;
+  int32_t max_autotune_global_count_;
+  int32_t autotune_global_count_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(AutotuneMap);
+  AutotuneMap(const AutotuneMap&) = delete;
+  void operator=(const AutotuneMap&) = delete;
 };
 
 // A Singleton helper that manages the global autotune results by groups.
 // The caller specified arbitrary Group type that can distinguish between
 // different autotune results, even if their Parameters and Configs are the
 // same.
-template <class Group, typename Parameters, typename Config>
+template <class Group, typename Parameters, typename Config,
+          typename Hasher = internal::AutotuneMapHasher<Parameters>>
 class AutotuneSingleton {
  public:
-  typedef AutotuneMap<Parameters, Config> AutotuneType;
+  typedef AutotuneMap<Parameters, Config, Hasher> AutotuneType;
   static AutotuneType* GetInstance() {
     static AutotuneType* instance = new AutotuneType(Group::name());
     return instance;
@@ -238,9 +267,9 @@ class AutotuneSingleton {
 // Logs convolution results to customized back-storage.
 void LogConvAutotuneResults(se::dnn::ConvolutionKind kind,
                             se::dnn::DataType element_type,
-                            se::DeviceMemoryBase input_buffer,
-                            se::DeviceMemoryBase filter_buffer,
-                            se::DeviceMemoryBase output_buffer,
+                            stream_executor::DeviceAddressBase input_buffer,
+                            stream_executor::DeviceAddressBase filter_buffer,
+                            stream_executor::DeviceAddressBase output_buffer,
                             const se::dnn::BatchDescriptor& input_desc,
                             const se::dnn::FilterDescriptor& filter_desc,
                             const se::dnn::BatchDescriptor& output_desc,
@@ -250,15 +279,29 @@ void LogConvAutotuneResults(se::dnn::ConvolutionKind kind,
 
 // Logs fused convolution results to customized back-storage.
 void LogFusedConvForwardAutotuneResults(
-    se::dnn::DataType element_type, se::DeviceMemoryBase input_buffer,
-    se::DeviceMemoryBase filter_buffer, se::DeviceMemoryBase output_buffer,
-    se::DeviceMemoryBase bias_buffer, se::DeviceMemoryBase side_input_buffer,
+    se::dnn::DataType element_type,
+    stream_executor::DeviceAddressBase input_buffer,
+    stream_executor::DeviceAddressBase filter_buffer,
+    stream_executor::DeviceAddressBase output_buffer,
+    stream_executor::DeviceAddressBase bias_buffer,
+    stream_executor::DeviceAddressBase side_input_buffer,
     const se::dnn::BatchDescriptor& input_desc,
     const se::dnn::FilterDescriptor& filter_desc,
     const se::dnn::BatchDescriptor& output_desc,
     const se::dnn::ConvolutionDescriptor& conv_desc, double conv_scale,
     double side_value_scale, se::dnn::ActivationMode activation_mode,
     se::StreamExecutor* stream_exec, absl::Span<const AutotuneResult> results);
+
+// Logs fused matmul results to customized back-storage.
+void LogFusedMatmulAutotuneResults(
+    se::dnn::DataType ab_dtype, se::dnn::DataType c_dtype,
+    stream_executor::DeviceAddressBase a_buffer,
+    stream_executor::DeviceAddressBase b_buffer,
+    stream_executor::DeviceAddressBase c_buffer,
+    stream_executor::DeviceAddressBase bias_buffer, bool trans_a, bool trans_b,
+    uint32_t m, uint32_t n, uint32_t k, int32_t lda, int32_t ldb, int32_t ldc,
+    se::dnn::ActivationMode activation_mode, se::StreamExecutor* stream_exec,
+    absl::Span<const AutotuneResult> results);
 
 // Autotuning map entry for cuDNN-frontend-capable APIs.
 //
@@ -379,14 +422,14 @@ class AutotuneEntry {
 };
 
 namespace internal {
-StatusOr<std::tuple<int, int>> BestCudnnConvAlgorithmIndices(
+absl::StatusOr<std::tuple<int, int>> BestCudnnConvAlgorithmIndices(
     absl::Span<const AutotuneResult> results);
 }  // namespace internal
 
 // Returns the best algorithms for the config, one is the fastest, the other is
 // other is fastest with 0 scratch space. Unsuccessful autotuning results are
 // allowed and ignored.
-StatusOr<se::dnn::AlgorithmConfig> BestCudnnConvAlgorithm(
+absl::StatusOr<stream_executor::dnn::AlgorithmConfig> BestCudnnConvAlgorithm(
     absl::Span<const AutotuneResult> results);
 
 // Explicitly-instantiated with ConvOp and FusedConvOp.
@@ -399,6 +442,12 @@ StatusOr<AutotuneEntry<Op>> BestCudnnConvAlgorithm(
     std::vector<
         std::unique_ptr<const se::dnn::OpRunner<typename Op::Signature>>>
         runners);
+
+// Get the Dnn workspace limit from the environment variable, which is in MB.
+// Return the workspace memory limit in bytes. If no value is set, return the
+// default value.
+int64_t GetDnnWorkspaceLimit(const std::string& envvar_in_mb,
+                             int64_t default_value_in_bytes);
 
 }  // namespace tensorflow
 

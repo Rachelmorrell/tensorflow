@@ -14,37 +14,21 @@
 # ==============================================================================
 """Utilities for managing tf.data user-defined functions."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import sys
 import warnings
 
-import six
-
+from tensorflow.python.autograph.core import ag_ctx as autograph_ctx
+from tensorflow.python.autograph.impl import api as autograph
+from tensorflow.python.data.ops import debug_mode
 from tensorflow.python.data.util import nest
 from tensorflow.python.data.util import structure
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
-from tensorflow.python.eager import function as eager_function
 
 from tensorflow.python.framework import function
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import script_ops
 from tensorflow.python.util import function_utils
-from tensorflow.python.util import lazy_loader
-
-autograph = lazy_loader.LazyLoader(
-    "autograph", globals(),
-    "tensorflow.python.autograph.impl.api")
-# TODO(mdan): Create a public API for this.
-autograph_ctx = lazy_loader.LazyLoader(
-    "autograph_ctx", globals(),
-    "tensorflow.python.autograph.core.ag_ctx")
-dataset_ops = lazy_loader.LazyLoader(
-    "dataset_ops", globals(),
-    "tensorflow.python.data.ops.dataset_ops")
+from tensorflow.python.util import variable_utils
 
 
 def _should_pack(arg):
@@ -80,20 +64,23 @@ def _should_unpack(arg):
   return type(arg) is tuple  # pylint: disable=unidiomatic-typecheck
 
 
-class StructuredFunctionWrapper():
+class StructuredFunctionWrapper:
   """A function wrapper that supports structured arguments and return values."""
 
-  def __init__(self,
-               func,
-               transformation_name,
-               dataset=None,
-               input_classes=None,
-               input_shapes=None,
-               input_types=None,
-               input_structure=None,
-               add_to_graph=True,
-               use_legacy_function=False,
-               defun_kwargs=None):
+  def __init__(
+      self,
+      func,
+      transformation_name,
+      dataset=None,
+      input_classes=None,
+      input_shapes=None,
+      input_types=None,
+      input_structure=None,
+      add_to_graph=True,
+      use_legacy_function=False,
+      defun_kwargs=None,
+      trace_graph_in_debug_mode=False,
+  ):
     """Creates a new `StructuredFunctionWrapper` for the given function.
 
     Args:
@@ -121,6 +108,9 @@ class StructuredFunctionWrapper():
         (legacy behavior).
       defun_kwargs: (Optional.) A dictionary mapping string argument names to
         values. If supplied, will be passed to `function` as keyword arguments.
+      trace_graph_in_debug_mode: (Optional.) If `True`, traces `func` as a graph
+        function instead of wrapping it in `py_function` when debug mode is
+        enabled. Does not affect synchronous execution.
 
     Raises:
       ValueError: If an invalid combination of `dataset`, `input_classes`,
@@ -175,17 +165,15 @@ class StructuredFunctionWrapper():
       if not _should_unpack(nested_args):
         nested_args = (nested_args,)
       ret = autograph.tf_convert(self._func, ag_ctx)(*nested_args)
+      ret = variable_utils.convert_variables_to_tensors(ret)
       if _should_pack(ret):
         ret = tuple(ret)
 
       try:
         self._output_structure = structure.type_spec_from_value(ret)
-      except (ValueError, TypeError):
-        six.reraise(
-            TypeError,
-            TypeError(f"Unsupported return value from function passed to "
-                      f"{transformation_name}: {ret}."),
-            sys.exc_info()[2])
+      except (ValueError, TypeError) as e:
+        raise TypeError(f"Unsupported return value from function passed to "
+                        f"{transformation_name}: {ret}.") from e
       return ret
 
     def trace_legacy_function(defun_kwargs):
@@ -200,17 +188,23 @@ class StructuredFunctionWrapper():
 
     def trace_py_function(defun_kwargs):
       # First we trace the function to infer the output structure.
-      @eager_function.defun_with_attributes(
-          input_signature=structure.get_flat_tensor_specs(
-              self._input_structure),
-          autograph=False,
-          attributes=defun_kwargs)
       def unused(*args):  # pylint: disable=missing-docstring,unused-variable
         ret = wrapper_helper(*args)
         ret = structure.to_tensor_list(self._output_structure, ret)
         return [ops.convert_to_tensor(t) for t in ret]
 
-      _ = unused.get_concrete_function()
+      func_name = defun_kwargs.pop("func_name", "unused")
+      tf_function = def_function.Function(
+          python_function=unused,
+          name=func_name,
+          input_signature=structure.get_flat_tensor_specs(
+              self._input_structure
+          ),
+          autograph=False,
+          experimental_attributes=defun_kwargs,
+      )
+
+      _ = tf_function.get_concrete_function()
 
       def py_function_wrapper(*args):
         nested_args = structure.from_compatible_tensor_list(
@@ -225,11 +219,11 @@ class StructuredFunctionWrapper():
 
       # Next we trace the function wrapped in `eager_py_func` to force eager
       # execution.
-      @eager_function.defun_with_attributes(
+      @def_function.function(
           input_signature=structure.get_flat_tensor_specs(
               self._input_structure),
           autograph=False,
-          attributes=defun_kwargs)
+          experimental_attributes=defun_kwargs)
       def wrapped_fn(*args):  # pylint: disable=missing-docstring
         return script_ops.eager_py_func(
             py_function_wrapper, args,
@@ -239,17 +233,23 @@ class StructuredFunctionWrapper():
 
     def trace_tf_function(defun_kwargs):
       # Note: wrapper_helper will apply autograph based on context.
-      @eager_function.defun_with_attributes(
-          input_signature=structure.get_flat_tensor_specs(
-              self._input_structure),
-          autograph=False,
-          attributes=defun_kwargs)
       def wrapped_fn(*args):  # pylint: disable=missing-docstring
         ret = wrapper_helper(*args)
         ret = structure.to_tensor_list(self._output_structure, ret)
         return [ops.convert_to_tensor(t) for t in ret]
 
-      return wrapped_fn.get_concrete_function
+      func_name = defun_kwargs.pop("func_name", "wrapped_fn")
+      tf_function = def_function.Function(
+          python_function=wrapped_fn,
+          name=func_name,
+          input_signature=structure.get_flat_tensor_specs(
+              self._input_structure
+          ),
+          autograph=False,
+          experimental_attributes=defun_kwargs,
+      )
+
+      return tf_function.get_concrete_function
 
     if use_legacy_function:
       defun_kwargs.update({"func_name": func_name + "_" + str(ops.uid())})
@@ -257,10 +257,10 @@ class StructuredFunctionWrapper():
     else:
       defun_kwargs.update({"func_name": func_name})
       defun_kwargs.update({"_tf_data_function": True})
-      if dataset_ops.DEBUG_MODE:
+      if debug_mode.DEBUG_MODE and not trace_graph_in_debug_mode:
         fn_factory = trace_py_function(defun_kwargs)
       else:
-        if def_function.functions_run_eagerly():
+        if not debug_mode.DEBUG_MODE and def_function.functions_run_eagerly():
           warnings.warn(
               "Even though the `tf.config.experimental_run_functions_eagerly` "
               "option is set, this option does not apply to tf.data functions. "

@@ -90,7 +90,7 @@ class PeerFailureTest(test.TestCase):
     # TODO(b/151232436): Always raise UnavailableError when a peer fails.
     with self.assertRaises(
         (tf.errors.UnavailableError, tf.errors.DeadlineExceededError)):
-      mpr.join(timeout=30)
+      mpr.join(timeout=60)
 
   def test_reduce_small_tensor(self):
     # This test simulates the case when a worker fails before or during reducing
@@ -124,7 +124,7 @@ class PeerFailureTest(test.TestCase):
     # TODO(b/151232436): Always raise UnavailableError when a peer fails.
     with self.assertRaises(
         (tf.errors.UnavailableError, tf.errors.DeadlineExceededError)):
-      mpr.join(timeout=30)
+      mpr.join(timeout=60)
 
 
 class PeerFailureRecoverTest(test.TestCase):
@@ -143,7 +143,9 @@ class PeerFailureRecoverTest(test.TestCase):
         if attempt == 1 and task_id == 1:
           quick_exit(1)
         v = tf.Variable(tf.random.uniform(()))
-        return v.read_value().numpy()
+        result = v.read_value().numpy()
+      multi_process_runner.get_barrier().wait()
+      return result
 
     cluster_spec = multi_worker_test_base.create_cluster_spec(num_workers=2)
     attempts = multi_process_runner.manager().dict()
@@ -168,7 +170,9 @@ class PeerFailureRecoverTest(test.TestCase):
       # worker-1 dies here.
       if attempt == 1 and task_id == 1:
         quick_exit(1)
-      return strategy.reduce("sum", value, axis=None).numpy()
+      result = strategy.reduce("sum", value, axis=None).numpy()
+      multi_process_runner.get_barrier().wait()
+      return result
 
     cluster_spec = multi_worker_test_base.create_cluster_spec(num_workers=2)
     attempts = multi_process_runner.manager().dict()
@@ -212,6 +216,7 @@ class PeerFailureRecoverTest(test.TestCase):
       if attempt == 1 and task_id == 1:
         quick_exit(1)
       strategy.run(replica_fn)
+      multi_process_runner.get_barrier().wait()
 
     cluster_spec = multi_worker_test_base.create_cluster_spec(num_workers=2)
     attempts = multi_process_runner.manager().dict()

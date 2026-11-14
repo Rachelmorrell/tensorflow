@@ -14,11 +14,14 @@ limitations under the License.
 ==============================================================================*/
 
 #include <memory>
+#include <string>
+#include <system_error>
 
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ToolOutputFile.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/OperationSupport.h"  // from @llvm-project
 #include "mlir/IR/PatternMatch.h"  // from @llvm-project
@@ -27,7 +30,6 @@ limitations under the License.
 #include "mlir/Support/FileUtilities.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tensorflow/transforms/test_passes_detail.h"
 #include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/stringpiece.h"
 
@@ -35,13 +37,16 @@ namespace mlir {
 namespace TF {
 namespace {
 
+#define GEN_PASS_DEF_INITTEXTFILETOIMPORTTESTPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/test_passes.h.inc"
+
 // InitTextFileToImportTestPass generates a temporary file and run the
 // InitTextFileToImportPass for testing purpose.
 class InitTextFileToImportTestPass
-    : public tf_test::InitTextFileToImportTestPassBase<
+    : public impl::InitTextFileToImportTestPassBase<
           InitTextFileToImportTestPass> {
  public:
-  explicit InitTextFileToImportTestPass() {}
+  explicit InitTextFileToImportTestPass() = default;
 
   StringRef getArgument() const final {
     return "tf-init-text-file-to-import-test";
@@ -74,7 +79,7 @@ void InitTextFileToImportTestPass::runOnOperation() {
   // Replace filename constant ops to use the temporary file.
   MLIRContext* context = &getContext();
 
-  for (FuncOp func : module.getOps<FuncOp>()) {
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
     llvm::SmallVector<arith::ConstantOp, 4> constant_ops(
         func.getOps<arith::ConstantOp>());
     for (auto op : constant_ops) {
@@ -91,23 +96,26 @@ void InitTextFileToImportTestPass::runOnOperation() {
         continue;
       }
 
-      op.valueAttr(DenseStringElementsAttr::get(shaped_type, {filename}));
+      op.setValueAttr(DenseStringElementsAttr::get(shaped_type, {filename}));
     }
   }
 
   // Run the lowering pass.
   PassManager pm(context);
-  pm.addNestedPass<FuncOp>(CreateInitTextFileToImportPass(""));
+  pm.addNestedPass<func::FuncOp>(CreateInitTextFileToImportPass(""));
   if (failed(pm.run(module))) return signalPassFailure();
 }
+
+#define GEN_PASS_DEF_INITTEXTFILETOIMPORTSAVEDMODELTESTPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/test_passes.h.inc"
 
 // InitTextFileToImportSavedModelTestPass mimicks a temporary saved model and
 // run the InitTextFileToImportPass for testing purpose.
 class InitTextFileToImportSavedModelTestPass
-    : public tf_test::InitTextFileToImportSavedModelTestPassBase<
+    : public impl::InitTextFileToImportSavedModelTestPassBase<
           InitTextFileToImportSavedModelTestPass> {
  public:
-  explicit InitTextFileToImportSavedModelTestPass() {}
+  explicit InitTextFileToImportSavedModelTestPass() = default;
 
  private:
   void runOnOperation() override;
@@ -138,7 +146,7 @@ void InitTextFileToImportSavedModelTestPass::runOnOperation() {
   // Run the lowering pass.
   MLIRContext* context = &getContext();
   PassManager pm(context);
-  pm.addNestedPass<FuncOp>(
+  pm.addNestedPass<func::FuncOp>(
       CreateInitTextFileToImportPass(std::string(tempdir)));
   if (failed(pm.run(module))) return signalPassFailure();
 }

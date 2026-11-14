@@ -17,17 +17,21 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/kernels/index_ops.h"
 
+#include <cstdint>
+
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/arithmetic.h"
-#include "tensorflow/compiler/xla/shape_util.h"
-#include "tensorflow/core/framework/bounds_check.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
-#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 XlaArgMinMaxOp::XlaArgMinMaxOp(OpKernelConstruction* ctx, bool is_min)
@@ -38,9 +42,9 @@ void XlaArgMinMaxOp::Compile(XlaOpKernelContext* ctx) {
   const TensorShape dimension_shape = ctx->InputShape(1);
 
   OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(dimension_shape),
-              errors::InvalidArgument(
+              absl::InvalidArgumentError(absl::StrCat(
                   "dim must be a scalar, but received tensor of shape: ",
-                  dimension_shape.DebugString()));
+                  dimension_shape.DebugString())));
 
   int64_t dim;
   OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntScalar(1, &dim));
@@ -48,15 +52,15 @@ void XlaArgMinMaxOp::Compile(XlaOpKernelContext* ctx) {
   const int input_dims = input_shape.dims();
   const int axis = dim < 0 ? dim + input_dims : dim;
 
-  OP_REQUIRES(
-      ctx, axis >= 0 && axis < input_dims,
-      errors::InvalidArgument("Expected dimension in the range [", -input_dims,
-                              ", ", input_dims, "), but got ", dim));
+  OP_REQUIRES(ctx, axis >= 0 && axis < input_dims,
+              absl::InvalidArgumentError(
+                  absl::StrCat("Expected dimension in the range [", -input_dims,
+                               ", ", input_dims, "), but got ", dim)));
   const int64_t axis_size = input_shape.dim_size(axis);
-  OP_REQUIRES(
-      ctx, axis_size > 0,
-      errors::InvalidArgument("Reduction axis ", dim, " is empty in shape ",
-                              input_shape.DebugString()));
+  OP_REQUIRES(ctx, axis_size > 0,
+              absl::InvalidArgumentError(
+                  absl::StrCat("Reduction axis ", dim, " is empty in shape ",
+                               input_shape.DebugString())));
 
   DataType index_type = output_type(0);
   xla::PrimitiveType index_xla_type;

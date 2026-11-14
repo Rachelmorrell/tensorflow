@@ -18,8 +18,8 @@ limitations under the License.
 
 #include <type_traits>
 
-#include "third_party/eigen3/Eigen/Core"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "Eigen/Core"  // from @eigen_archive
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -278,7 +278,7 @@ struct ScatterFunctorBase<CPUDevice, T, Index, scatter_op::UpdateOp::ASSIGN> {
     // indices and params sizes were validated in DoCompute().
     const Index N = static_cast<Index>(indices.size());
     const Index limit = static_cast<Index>(params.dimension(0));
-    if (!std::is_same<T, tstring>::value) {
+    if (!std::is_same_v<T, tstring>) {
       for (Index i = 0; i < N; i++) {
         // Grab the index and check its validity.  Do this carefully,
         // to avoid checking the value and grabbing it again from

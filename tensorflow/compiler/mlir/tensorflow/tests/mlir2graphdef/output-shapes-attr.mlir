@@ -1,11 +1,25 @@
+// Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
 // RUN: tf-mlir-translate -mlir-to-graphdef %s -o - | FileCheck %s
 
-func @main(%arg0: tensor<10xi32>) -> tensor<10xi32>
+func.func @main(%arg0: tensor<10xi32>) -> tensor<10xi32>
 attributes {tf.entry_function = {inputs = "input0", outputs = "output0"}} {
   %graph = tf_executor.graph {
     tf_executor.fetch %arg0 : tensor<10xi32>
   }
-  return %graph : tensor<10xi32>
+  func.return %graph : tensor<10xi32>
 }
 
 // CHECK:      node {
@@ -17,12 +31,10 @@ attributes {tf.entry_function = {inputs = "input0", outputs = "output0"}} {
 // CHECK-NEXT:     }
 // CHECK:          key: "_output_shapes"
 // CHECK-NEXT:     value {
-// CHECK-NEXT:      shape {
-// CHECK-NEXT:        dim {
-// CHECK-NEXT:          size: 10
-// CHECK-NEXT:        }
-// CHECK-NEXT:      }
-// CHECK-NEXT:   }
+// CHECK-NEXT:       list {
+// CHECK-NEXT:         shape {
+// CHECK-NEXT:           dim {
+// CHECK-NEXT:             size: 10
 // CHECK:        name: "output0"
 // CHECK-NEXT:   op: "_Retval"
 // CHECK-NEXT:   input: "input0"
@@ -39,20 +51,20 @@ attributes {tf.entry_function = {inputs = "input0", outputs = "output0"}} {
 // CHECK-NEXT:     }
 // CHECK-NEXT:   }
 
-func private @simple_callee(%arg0: tensor<2xi32>) -> tensor<2xi32> {
+func.func private @simple_callee(%arg0: tensor<2xi32>) -> tensor<2xi32> {
   %graph = tf_executor.graph {
     tf_executor.fetch %arg0 : tensor<2xi32>
   }
-  return %graph#0 : tensor<2xi32>
+  func.return %graph#0 : tensor<2xi32>
 }
 
 // Test with a TPUPartitionedCallOp that is not inlined.
-func @dont_inline_tpu_partitioned_call(%arg0: tensor<2xi32> {tf._user_specified_name = "inputs_0"}, %arg1: tensor<2xi32> {tf._user_specified_name = "inputs_1"}) -> tensor<2xi32> {
+func.func @dont_inline_tpu_partitioned_call(%arg0: tensor<2xi32> {tf._user_specified_name = "inputs_0"}, %arg1: tensor<2xi32> {tf._user_specified_name = "inputs_1"}) -> tensor<2xi32> {
   %graph = tf_executor.graph {
     %result:2 = tf_executor.island wraps "tf.TPUPartitionedCall"(%arg0, %arg1) {config = "", config_proto = "", executor_type = "", f = @simple_callee} : (tensor<2xi32>, tensor<2xi32>) -> tensor<2xi32>
     tf_executor.fetch %result#0 : tensor<2xi32>
   }
-  return %graph : tensor<2xi32>
+  func.return %graph : tensor<2xi32>
 }
 
 // CHECK:       library {
@@ -76,9 +88,10 @@ func @dont_inline_tpu_partitioned_call(%arg0: tensor<2xi32> {tf._user_specified_
 // CHECK-NEXT:          attr {
 // CHECK-NEXT:            key: "_output_shapes"
 // CHECK-NEXT:            value {
-// CHECK-NEXT:              shape {
-// CHECK-NEXT:                dim {
-// CHECK-NEXT:                  size: 2
+// CHECK-NEXT:              list {
+// CHECK-NEXT:                shape {
+// CHECK-NEXT:                  dim {
+// CHECK-NEXT:                    size: 2
 // CHECK:               attr {
 // CHECK-NEXT:            key: "_user_specified_name"
 // CHECK-NEXT:            value {
@@ -89,9 +102,10 @@ func @dont_inline_tpu_partitioned_call(%arg0: tensor<2xi32> {tf._user_specified_
 // CHECK-NEXT:          attr {
 // CHECK-NEXT:            key: "_output_shapes"
 // CHECK-NEXT:            value {
-// CHECK-NEXT:              shape {
-// CHECK-NEXT:                dim {
-// CHECK-NEXT:                  size: 2
+// CHECK-NEXT:              list {
+// CHECK-NEXT:                shape {
+// CHECK-NEXT:                  dim {
+// CHECK-NEXT:                    size: 2
 // CHECK:               attr {
 // CHECK-NEXT:            key: "_user_specified_name"
 // CHECK-NEXT:            value {

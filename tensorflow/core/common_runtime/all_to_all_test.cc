@@ -71,7 +71,7 @@ TEST_F(AllToAllTest, SuccessDifferentRank) {
       test::AsTensor<double>({4., 5., 6.}),
       test::AsTensor<double>({7., 8., 9.}),
   };
-  std::vector<std::vector<int32>> device_ranks = {{2, 1, 0}};
+  std::vector<std::vector<int32_t>> device_ranks = {{2, 1, 0}};
   BlockingCounter counter(3);
   for (int i = 0; i < 3; ++i) {
     SchedClosure([this, &tensors, &device_ranks, i, &counter]() {
@@ -115,8 +115,8 @@ TEST_F(AllToAllTest, Failure) {
       Device* device = nullptr;
       TF_CHECK_OK(test_env_->device_mgr->LookupDevice(
           col_params->group.members[i].device.name(), &device));
-      Status status = RunCollective(test_env_.get(), col_params.get(), device,
-                                    &tensors[i], &tensors[i]);
+      absl::Status status = RunCollective(test_env_.get(), col_params.get(),
+                                          device, &tensors[i], &tensors[i]);
       if (!status.ok()) {
         mutex_lock l(mu);
         ++num_failures;
@@ -147,10 +147,10 @@ TEST_F(AllToAllTest, WrongFirstDimensionSize) {
       Device* device = nullptr;
       TF_CHECK_OK(test_env_->device_mgr->LookupDevice(
           col_params->group.members[i].device.name(), &device));
-      Status status = RunCollective(test_env_.get(), col_params.get(), device,
-                                    &tensors[i], &tensors[i]);
+      absl::Status status = RunCollective(test_env_.get(), col_params.get(),
+                                          device, &tensors[i], &tensors[i]);
       counter.DecrementCount();
-      EXPECT_TRUE(errors::IsInvalidArgument(status));
+      EXPECT_TRUE(absl::IsInvalidArgument(status));
     });
   }
   counter.Wait();

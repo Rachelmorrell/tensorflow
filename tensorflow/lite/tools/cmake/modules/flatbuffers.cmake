@@ -17,13 +17,16 @@ if(TARGET flatbuffers OR flatbuffers_POPULATED)
   return()
 endif()
 
-include(FetchContent)
+include(OverridableFetchContent)
 
 OverridableFetchContent_Declare(
   flatbuffers
   GIT_REPOSITORY https://github.com/google/flatbuffers
-  # Sync with tensorflow/third_party/flatbuffers/workspace.bzl
-  GIT_TAG v1.12.0
+  # Keep in sync with tensorflow/third_party/flatbuffers/workspace.bzl
+  GIT_TAG v25.9.23
+  # NOTE: b/340264458 - `GIT_SHALLOW TRUE` works for tag name only,
+  # so if you change the `GIT_TAG` above to a hash rather than a tag name,
+  # you need to also change the line below to `GIT_SHALLOW FALSE`.
   GIT_SHALLOW TRUE
   GIT_PROGRESS TRUE
   SOURCE_DIR "${CMAKE_BINARY_DIR}/flatbuffers"
@@ -68,7 +71,7 @@ endif()
 
 ExternalProject_Add(flatbuffers-flatc
   PREFIX ${CMAKE_BINARY_DIR}/flatbuffers-flatc
-  SOURCE_DIR ${CMAKE_BINARY_DIR}/flatbuffers
+  SOURCE_DIR ${flatbuffers_SOURCE_DIR}
   CMAKE_ARGS -DCMAKE_CXX_FLAGS="-DNOMINMAX=1"
              -DFLATBUFFERS_BUILD_TESTS=OFF
              -DFLATBUFFERS_BUILD_FLATLIB=OFF

@@ -1,4 +1,18 @@
-// RUN: tf-opt %s -tf-tpu-bridge 2>&1 | FileCheck %s
+// Copyright 2026 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
+// RUN: tf-opt %s -tf-replicated-clustering-bridge-v2 -tfrt-lower-cluster-to-runtime-ops-tpu 2>&1 | FileCheck %s
 
 // This test verifies that the tail extraction is not terminated prematurely
 // in handling tf.If op which would end up with excessive host-device
@@ -14,13 +28,13 @@
 // CHECK-NOT: tf._XlaSendFromHost
 
 module attributes {tf.devices = ["/job:localhost/replica:0/task:0/device:CPU:0", "/job:localhost/replica:0/task:0/device:TPU:0", "/job:localhost/replica:0/task:0/device:TPU:1", "/job:localhost/replica:0/task:0/device:TPU_SYSTEM:0"], tf.versions = {bad_consumers = [], min_consumer = 12 : i32, producer = 741 : i32}}  {
-  func private @if_then_branch(%arg0: tensor<*xi1>, %arg1: tensor<*xi64>, %arg2: tensor<*xi64>) -> tensor<*xi1> {
-    return %arg0 : tensor<*xi1>
+  func.func private @if_then_branch(%arg0: tensor<*xi1>, %arg1: tensor<*xi64>, %arg2: tensor<*xi64>) -> tensor<*xi1> {
+    func.return %arg0 : tensor<*xi1>
   }
-  func private @if_else_branch(%arg0: tensor<*xi1>, %arg1: tensor<*xi64>, %arg2: tensor<*xi64>) -> tensor<*xi1> {
-    return %arg0 : tensor<*xi1>
+  func.func private @if_else_branch(%arg0: tensor<*xi1>, %arg1: tensor<*xi64>, %arg2: tensor<*xi64>) -> tensor<*xi1> {
+    func.return %arg0 : tensor<*xi1>
   }
-  func @"tpu_subgraph"(%arg0: tensor<*xi64>) -> tensor<*xi1> {
+  func.func @"tpu_subgraph"(%arg0: tensor<*xi64>) -> tensor<*xi1> {
     %cst = "tf.Const"() {value = dense<0> : tensor<i64>} : () -> tensor<i64>
     %cst_0 = "tf.Const"() {value = dense<0> : tensor<i32>} : () -> tensor<i32>
     %cst_1 = "tf.Const"() {value = dense<1> : tensor<i32>} : () -> tensor<i32>
@@ -30,6 +44,6 @@ module attributes {tf.devices = ["/job:localhost/replica:0/task:0/device:CPU:0",
     %2 = "tf.Range"(%cst_0, %1, %cst_1) {_tpu_replicate = "cluster", _xla_outside_compilation = "0", device = ""} : (tensor<i32>, tensor<*xi32>, tensor<i32>) -> tensor<*xi32>
     %3 = "tf.All"(%0, %2) {_tpu_replicate = "cluster", _xla_outside_compilation = "0", device = "", keep_dims = false} : (tensor<*xi1>, tensor<*xi32>) -> tensor<*xi1>
     %4 = "tf.If"(%3, %3, %arg0, %cst) {_tpu_replicate = "cluster", _xla_outside_compilation = "0", device = "", else_branch = @if_else_branch, is_stateless = false, then_branch = @if_then_branch} : (tensor<*xi1>, tensor<*xi1>, tensor<*xi64>, tensor<i64>) -> tensor<*xi1>
-    return %4 : tensor<*xi1>
+    func.return %4 : tensor<*xi1>
   }
 }

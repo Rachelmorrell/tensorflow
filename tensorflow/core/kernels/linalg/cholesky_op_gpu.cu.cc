@@ -17,7 +17,7 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -94,22 +94,26 @@ class CholeskyOpGpu : public AsyncOpKernel {
   void ComputeAsync(OpKernelContext* context, DoneCallback done) final {
     const Tensor& input = context->input(0);
     const int ndims = input.dims();
+    // Validate inputs.
+    OP_REQUIRES_ASYNC(context, ndims >= 2,
+                      absl::InvalidArgumentError(absl::StrCat(
+                          "Input must have rank >= 2, got ", ndims)),
+                      done);
     const int64_t n = input.dim_size(ndims - 1);
 #if GOOGLE_CUDA
     cublasFillMode_t fill = CUBLAS_FILL_MODE_UPPER;
 #elif TENSORFLOW_USE_ROCM
+#if TF_ROCM_VERSION >= 40500
+    hipsolverFillMode_t fill = HIPSOLVER_FILL_MODE_UPPER;
+#else
     rocblas_fill fill = rocblas_fill_upper;
 #endif
-    // Validate inputs.
-    OP_REQUIRES_ASYNC(
-        context, ndims >= 2,
-        errors::InvalidArgument("Input must have rank >= 2, got ", ndims),
-        done);
-    OP_REQUIRES_ASYNC(
-        context, input.dim_size(ndims - 2) == n,
-        errors::InvalidArgument("Input matrices must be squares, got",
-                                input.dim_size(ndims - 2), " != ", n),
-        done);
+#endif
+    OP_REQUIRES_ASYNC(context, input.dim_size(ndims - 2) == n,
+                      absl::InvalidArgumentError(
+                          absl::StrCat("Input matrices must be square, got ",
+                                       input.dim_size(ndims - 2), " != ", n)),
+                      done);
 
     if (input.NumElements() == 0) {
       // If X is an empty matrix (0 rows, 0 col), X * X' == X.
@@ -142,7 +146,6 @@ class CholeskyOpGpu : public AsyncOpKernel {
     const int64_t batch_size = input_reshaped.dimension(0);
     std::vector<DeviceLapackInfo> dev_info;
 
-#if CUDA_VERSION >= 9020
     // Decide whether to use the batched API.
     // TODO(rmlarsen): The value 128 was found to be optimal for the equivalent
     // split in matrix_solve_op. Tune this heuristic.
@@ -152,7 +155,7 @@ class CholeskyOpGpu : public AsyncOpKernel {
     if (use_batched_solver) {
       // For small matrices or large batch sizes, we use the batched interface
       // from cuSolver.
-      auto output_reshaped_ptrs = solver->GetScratchSpace<uint8>(
+      auto output_reshaped_ptrs = solver->GetScratchSpace<uint8_t>(
           sizeof(Scalar*) * batch_size, "input_copt_ptrs",
           /* on_host */ true);
       const Scalar** output_reshaped_ptrs_base =
@@ -178,8 +181,6 @@ class CholeskyOpGpu : public AsyncOpKernel {
                 n /* num_lower_diags */, 0 /* num_upper_diags */,
                 input_reshaped, output_reshaped);
     } else {
-#endif
-
       dev_info.push_back(solver->GetDeviceLapackInfo(batch_size, "potrf"));
       for (int batch = 0; batch < batch_size; ++batch) {
         OP_REQUIRES_OK_ASYNC(
@@ -188,35 +189,41 @@ class CholeskyOpGpu : public AsyncOpKernel {
                           &dev_info.back()(batch)),
             done);
       }
-
-#if CUDA_VERSION >= 9020
     }
-#endif
 
     // Register callback to check info after kernels finish.
     auto info_checker = [context, done, n](
-                            const Status& status,
+                            const absl::Status& status,
                             const std::vector<HostLapackInfo>& host_infos) {
-      if (!status.ok() && errors::IsInvalidArgument(status) &&
-          !host_infos.empty()) {
-        Tensor* output = context->mutable_output(0);
-        auto output_reshaped = output->template flat_inner_dims<Scalar, 3>();
+      if (!status.ok()) {
+        if (absl::IsInvalidArgument(status) && !host_infos.empty()) {
+          Tensor* output = context->mutable_output(0);
+          auto output_reshaped = output->template flat_inner_dims<Scalar, 3>();
 
-        for (int i = 0; i < host_infos[0].size(); ++i) {
-          if (host_infos[0](i) > 0) {
-            LOG(WARNING) << "Cholesky decomposition was not successful for "
-                            "batch "
-                         << i
-                         << ". The input might not be valid. "
-                            "Filling lower-triangular output with NaNs.";
-            typename TTypes<Scalar, 3>::Tensor output_batch(
-                &output_reshaped(i, 0, 0), 1, n, n);
-            functor::MatrixBandFillFunctor<GPUDevice, Scalar> band_fill;
-            band_fill(context, context->eigen_device<GPUDevice>(),
-                      /*num_lower_diags=*/n, /*num_upper_diags=*/0,
-                      /*value=*/Eigen::NumTraits<Scalar>::quiet_NaN(),
-                      output_batch);
+          for (int i = 0; i < host_infos[0].size(); ++i) {
+            OP_REQUIRES_ASYNC(
+                context, host_infos[0](i) >= 0,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "Invalid input argument no. ", host_infos[0].data()[i],
+                    " for batch index ", i, ".")),
+                done);
+            if (host_infos[0](i) > 0) {
+              LOG(WARNING) << "Cholesky decomposition was not successful for "
+                              "batch "
+                           << i
+                           << ". The input might not be valid. "
+                              "Filling lower-triangular output with NaNs.";
+              typename TTypes<Scalar, 3>::Tensor output_batch(
+                  &output_reshaped(i, 0, 0), 1, n, n);
+              functor::MatrixBandFillFunctor<GPUDevice, Scalar> band_fill;
+              band_fill(context, context->eigen_device<GPUDevice>(),
+                        /*num_lower_diags=*/n, /*num_upper_diags=*/0,
+                        /*value=*/Eigen::NumTraits<Scalar>::quiet_NaN(),
+                        output_batch);
+            }
           }
+        } else {
+          OP_REQUIRES_OK_ASYNC(context, status, done);
         }
       }
       done();

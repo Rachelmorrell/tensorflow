@@ -15,55 +15,56 @@ limitations under the License.
 
 #include "tensorflow/core/nccl/collective_communicator.h"
 
-#include "tensorflow/core/framework/cancellation.h"
+#include "tensorflow/core/framework/collective.h"
+#include "tensorflow/core/protobuf/config.pb.h"
 
 #if TENSORFLOW_USE_NCCL && (GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
 
 #include "absl/memory/memory.h"
 #include "tensorflow/core/nccl/nccl_manager.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 
 namespace tensorflow {
 
 class NcclCommunicator : public NcclCommunicatorInterface {
  public:
-  string GenerateCommunicatorKey() override {
+  std::string GenerateCommunicatorKey() override {
     return nccl_manager_.GenerateCommunicatorKey();
   }
 
   void Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
                StatusCallback done) override;
 
-  void StartAbort(const Status& s) override;
+  void StartAbort(const absl::Status& s) override;
 
  private:
   NcclManager nccl_manager_;
 };
 
 namespace {
-Status ReductionOp(const string& merge_op, ncclRedOp_t* reduction_op) {
+absl::Status ReductionOp(const std::string& merge_op,
+                         ncclRedOp_t* reduction_op) {
   if (merge_op == "Add") {
     *reduction_op = ncclSum;
-    return Status::OK();
+    return absl::OkStatus();
   } else if (merge_op == "Mul") {
     *reduction_op = ncclProd;
-    return Status::OK();
+    return absl::OkStatus();
   } else if (merge_op == "Maximum") {
     *reduction_op = ncclMax;
-    return Status::OK();
+    return absl::OkStatus();
   } else if (merge_op == "Minimum") {
     *reduction_op = ncclMin;
-    return Status::OK();
+    return absl::OkStatus();
   } else {
-    return errors::Internal(
+    return absl::InternalError(absl::StrCat(
         "Expected merge_op to be in [Add, Mul, Maximum, Minimum], found ",
-        merge_op);
+        merge_op));
   }
 }
 
-string NcclCollectiveKey(const string& exec_key, int step_id) {
-  return strings::StrCat(exec_key, ":", step_id);
+std::string NcclCollectiveKey(const std::string& exec_key, int step_id) {
+  return absl::StrCat(exec_key, ":", step_id);
 }
 }  // namespace
 
@@ -75,7 +76,7 @@ std::unique_ptr<NcclCommunicatorInterface> MaybeCreateNcclCommunicator(
   if (item != device_count.end() && item->second == 0) {
     return nullptr;
   }
-  return absl::make_unique<NcclCommunicator>();
+  return std::make_unique<NcclCommunicator>();
 }
 
 void NcclCommunicator::Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
@@ -84,11 +85,12 @@ void NcclCommunicator::Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
   const int num_global_devices = col_params->group.group_size;
   const int num_local_devices = col_params->group.num_devices_per_task.at(
       col_params->group.members[col_params->default_rank].task);
-  const string nccl_collective_key =
+  const std::string nccl_collective_key =
       NcclCollectiveKey(col_ctx->exec_key, col_ctx->step_id);
   auto* compute_stream = col_ctx->op_ctx->op_device_context()->stream();
-  auto* gpu_info = col_ctx->op_ctx->device()->tensorflow_gpu_device_info();
-  auto participant = absl::make_unique<NcclManager::Participant>(
+  auto* gpu_info =
+      col_ctx->op_ctx->device()->tensorflow_accelerator_device_info();
+  auto participant = std::make_unique<NcclManager::Participant>(
       compute_stream->parent(), compute_stream, gpu_info, col_ctx->input,
       col_ctx->output, col_ctx->col_params->default_rank,
       /*done_callback=*/nullptr);
@@ -99,15 +101,16 @@ void NcclCommunicator::Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
     CancellationToken cancel_token = cancel_mgr->get_cancellation_token();
     bool already_cancelled =
         !cancel_mgr->RegisterCallback(cancel_token, [this]() {
-          nccl_manager_.StartAbort(errors::Cancelled("op cancelled"));
+          nccl_manager_.StartAbort(absl::CancelledError("op cancelled"));
           nccl_manager_.Reset();
         });
     if (already_cancelled) {
-      done(errors::Cancelled("op cancelled"));
+      done(absl::CancelledError("op cancelled"));
       return;
     }
     participant->done_callback = [cancel_mgr, cancel_token,
-                                  done = std::move(done)](const Status& s) {
+                                  done =
+                                      std::move(done)](const absl::Status& s) {
       // Do not block on deregistration since this can be invoked by
       // NcclManager::StartAbort() in the cancellation callback.
       cancel_mgr->TryDeregisterCallback(cancel_token);
@@ -137,7 +140,7 @@ void NcclCommunicator::Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
   switch (col_params->instance.type) {
     case REDUCTION_COLLECTIVE: {
       ncclRedOp_t reduction_op;
-      Status s =
+      absl::Status s =
           ReductionOp(col_params->merge_op->type_string(), &reduction_op);
       if (!s.ok()) {
         participant->done_callback(s);
@@ -159,9 +162,25 @@ void NcclCommunicator::Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
       }
       break;
     }
+    case REDUCE_SCATTER_COLLECTIVE: {
+      ncclRedOp_t reduction_op;
+      absl::Status s =
+          ReductionOp(col_params->merge_op->type_string(), &reduction_op);
+      if (!s.ok()) {
+        participant->done_callback(s);
+        return;
+      }
+      nccl_manager_.AddToReduceScatter(std::move(participant), context,
+                                       reduction_op);
+      break;
+    }
+    case ALL_TO_ALL_COLLECTIVE: {
+      nccl_manager_.AddToAllToAll(std::move(participant), context);
+      break;
+    }
     default: {
-      participant->done_callback(errors::Internal("Unexpected CollectiveType ",
-                                                  col_params->instance.type));
+      participant->done_callback(absl::InternalError(absl::StrCat(
+          "Unexpected CollectiveType ", col_params->instance.type)));
       return;
     }
   }
@@ -185,8 +204,8 @@ void NcclCommunicator::Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
     // `WaitForDependencies` may block if the collective instances on which this
     // op depends have not yet launched.  When this function returns, this op is
     // ready to go.
-    profiler::TraceMe activity("WaitForDependencies",
-                               profiler::TraceMeLevel::kInfo);
+    tsl::profiler::TraceMe activity("WaitForDependencies",
+                                    tsl::profiler::TraceMeLevel::kInfo);
     col_ctx->col_exec->WaitForDependencies(*col_params);
     nccl_manager_.SignalMultiNodeReady(nccl_collective_key);
   }
@@ -195,12 +214,13 @@ void NcclCommunicator::Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
     // `NcclManager` will enqueue the NCCL kernel on the NCCL stream.  Thus the
     // implementation of `UnblockDependencies` keeps track of the number of
     // devices that have launched.
-    profiler::TraceMe activity("Schedule", profiler::TraceMeLevel::kInfo);
+    tsl::profiler::TraceMe activity("Schedule",
+                                    tsl::profiler::TraceMeLevel::kInfo);
     col_ctx->col_exec->UnblockDependencies(*col_params);
   }
 }
 
-void NcclCommunicator::StartAbort(const Status& s) {
+void NcclCommunicator::StartAbort(const absl::Status& s) {
   nccl_manager_.StartAbort(s);
 }
 
